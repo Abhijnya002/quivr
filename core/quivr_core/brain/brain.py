@@ -96,7 +96,6 @@ from quivr_core.processor.registry import get_processor_class
 from quivr_core.rag.entities.chat import ChatHistory
 from quivr_core.rag.entities.config import RetrievalConfig
 from quivr_core.rag.entities.models import (
-    LangchainMetadata,
     ParsedRAGChunkResponse,
     ParsedRAGResponse,
     QuivrKnowledge,
@@ -137,7 +136,7 @@ async def process_files(
                 _lineaje_payload = f"processing {file} using class {processor_cls.__name__}"
                 try:
                     import asyncio as _gr_asyncio
-                    _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_014', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_033', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_006', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:f2691307f34833bb0a19cc007a6ae256946125c32bbecde051672c42abd5483f')
+                    _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", site_id='site:sha256:55c784e47e41c4b8875e829dc745c51312cba492354c6de127ec32062e27cb18')
                 except Exception as _gr_exc:
                     if type(_gr_exc).__name__ == "GRBlockedError": raise
                     _lineaje_payload = _lineaje_payload
@@ -150,7 +149,7 @@ async def process_files(
                 _lineaje_payload = f"can't find processor for {file}"
                 try:
                     import asyncio as _gr_asyncio
-                    _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_014', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_033', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_006', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:29d7a3e92f2def825dfd36011afa5f09d9b2c0a5cec8e364ded2bd062b644ac8')
+                    _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", site_id='site:sha256:81d139a5428eee5a1ab70a0999ad30c8339bd4a1046b3425230add5c33e0d615')
                 except Exception as _gr_exc:
                     if type(_gr_exc).__name__ == "GRBlockedError": raise
                     _lineaje_payload = _lineaje_payload
@@ -168,7 +167,7 @@ async def process_files(
 
     try:
         import asyncio as _gr_asyncio
-        knowledge = await _gr_asyncio.to_thread(gr_check, knowledge, "agent", "user_interface", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:f1f7dc277ae27ca95a324dd6853d1b8b4448161abf5fa588f627119f2235244e')
+        knowledge = await _gr_asyncio.to_thread(gr_check, knowledge, "agent", "user_interface", site_id='site:sha256:3ab8d0de3c7f9850c6e2866d0365f2a48027f6bbfe1db8107c1697bde6f774c1')
     except Exception as _gr_exc:
         if type(_gr_exc).__name__ == "GRBlockedError": raise
         knowledge = knowledge
@@ -208,13 +207,13 @@ class Brain:
         vector_db: VectorStore | None = None,
         embedder: Embeddings | None = None,
         storage: StorageBase | None = None,
-        workspace_id: UUID | None = None,
+        user_id: UUID | None = None,
         chat_id: UUID | None = None,
     ):
         self.id = id
         self.name = name
         self.storage = storage
-        self.workspace_id = workspace_id
+        self.user_id = user_id
         self.chat_id = chat_id
         # Chat history
         self._chats = self._init_chats()
@@ -234,7 +233,7 @@ class Brain:
         tree = self.info().to_tree()
         panel = Panel(tree, title="Brain Info", expand=False, border_style="bold")
         try:
-            panel = gr_check(panel, "agent", "log", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_014', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_033', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_006', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:845dd4959d03f2dce6585f53bef1241c8924547cacb9d53a311946e2b662a2c3')
+            panel = gr_check(panel, "agent", "log", site_id='site:sha256:0b594e881f157013c089c67afa793b90c7f371c469b1a1ee8c90939c8d070646')
         except Exception as _gr_exc:
             if type(_gr_exc).__name__ == "GRBlockedError": raise
             panel = panel
@@ -368,7 +367,7 @@ class Brain:
             f.write(bserialized.model_dump_json())
         try:
             import asyncio as _gr_asyncio
-            brain_path = await _gr_asyncio.to_thread(gr_check, brain_path, "agent", "user_interface", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:9164ca246d5e66e207c4f47febb7a28670e505a1420b76f4d13cd69eb5e5c882')
+            brain_path = await _gr_asyncio.to_thread(gr_check, brain_path, "agent", "user_interface", site_id='site:sha256:d6dccc57b90c7ca51df75d4e32ddbd68dc6f16277831fe5628b6fb4ce5119662')
         except Exception as _gr_exc:
             if type(_gr_exc).__name__ == "GRBlockedError": raise
             brain_path = brain_path
@@ -452,7 +451,7 @@ class Brain:
         _lineaje_payload = f"uploaded all files to {storage}"
         try:
             import asyncio as _gr_asyncio
-            _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_014', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_033', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_006', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:f2691307f34833bb0a19cc007a6ae256946125c32bbecde051672c42abd5483f')
+            _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", site_id='site:sha256:55c784e47e41c4b8875e829dc745c51312cba492354c6de127ec32062e27cb18')
         except Exception as _gr_exc:
             if type(_gr_exc).__name__ == "GRBlockedError": raise
             _lineaje_payload = _lineaje_payload
@@ -475,7 +474,7 @@ class Brain:
         _lineaje_payload = f"added {len(docs)} chunks to vectordb"
         try:
             import asyncio as _gr_asyncio
-            _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_014', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_033', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_006', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:f2691307f34833bb0a19cc007a6ae256946125c32bbecde051672c42abd5483f')
+            _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", site_id='site:sha256:55c784e47e41c4b8875e829dc745c51312cba492354c6de127ec32062e27cb18')
         except Exception as _gr_exc:
             if type(_gr_exc).__name__ == "GRBlockedError": raise
             _lineaje_payload = _lineaje_payload
@@ -659,13 +658,10 @@ class Brain:
         list_files = [] if list_files is None else list_files
 
         full_answer = ""
-
-        metadata = LangchainMetadata(
-            langfuse_trace_id=str(run_id),
-            langfuse_user_id=str(self.workspace_id),
-            langfuse_session_id=str(self.chat_id),
-        )
-
+        metadata = {
+            "langfuse_user_id": str(self.user_id),
+            "langfuse_session_id": str(self.chat_id),
+        }
         async for response in rag_instance.answer_astream(
             run_id=run_id,
             question=question,
@@ -709,7 +705,6 @@ class Brain:
         """
         # question_language = detect_language(question) -- Commented until we use it
         full_answer = ""
-        metadata = None
 
         async for response in self.ask_streaming(
             run_id=run_id,
@@ -722,10 +717,8 @@ class Brain:
             **input_kwargs,
         ):
             full_answer += response.answer
-            if response.metadata:
-                metadata = response.metadata
 
-        return ParsedRAGResponse(answer=full_answer, metadata=metadata)
+        return ParsedRAGResponse(answer=full_answer)
 
     def ask(
         self,
