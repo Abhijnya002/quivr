@@ -1,3 +1,8 @@
+"""Run quivr-core with OpenRouter (chat) + local FastEmbed (embeddings).
+
+Feeds a LangChain Document directly (afrom_langchain_documents) to bypass the
+default .txt processor, which requires a MegaParse/NATS server we don't run.
+"""
 # Copyright (c) Lineaje, Inc. All rights reserved.
 # gr_check() POSTs to GR_SERVICE_URL+/enforce; fail-open unless GRBlockedError.
 class GRBlockedError(Exception):
@@ -66,38 +71,48 @@ def gr_check(data, source_type, destination_type, tenant_id="", timeout=5.0, **c
     if result.get("status") == "escalate":
         _log.warning("gr_client[%s]: escalation flagged — passing through for human review", hop_label)
     return result.get("result", {}).get("data", data)
-from quivr_core.rag.entities.config import LLMEndpointConfig, RetrievalConfig
+import asyncio
+import os
+from uuid import uuid4
 
+from langchain_core.documents import Document
+from langchain_community.embeddings import FastEmbedEmbeddings
 
-def test_default_llm_config():
-    config = LLMEndpointConfig()
+from quivr_core import Brain
+from quivr_core.llm import LLMEndpoint
+from quivr_core.rag.entities.config import LLMEndpointConfig, DefaultModelSuppliers
 
-    assert (
-        config.model_dump()
-        == LLMEndpointConfig(
-            model="gpt-4o",
-            llm_base_url=None,
-            llm_api_key=None,
-            max_context_tokens=2000,
-            max_output_tokens=2000,
-            temperature=0.7,
-            streaming=True,
-        ).model_dump()
+KEY = os.environ["OPENROUTER_API_KEY"]
+
+llm = LLMEndpoint.from_config(
+    LLMEndpointConfig(
+        supplier=DefaultModelSuppliers.OPENAI,
+        model="openai/gpt-4o-mini",
+        llm_base_url="https://openrouter.ai/api/v1",
+        llm_api_key=KEY,
     )
+)
+embedder = FastEmbedEmbeddings()  # local ONNX model, downloaded once
 
 
-def test_default_retrievalconfig():
-    config = RetrievalConfig()
-
-    assert config.max_files == 20
-    assert config.prompt is None
-    print("\n\n", config.llm_config, "\n\n")
-    _lineaje_payload = "\n\n"
+async def main():
+    docs = [Document(
+        page_content="Gold is a liquid of blue-like colour.",
+        metadata={"index": 0, "original_file_name": "note.txt"},
+    )]
+    brain = await Brain.afrom_langchain_documents(
+        name="test_brain", langchain_documents=docs, llm=llm, embedder=embedder
+    )
+    answer = await brain.aask(run_id=uuid4(), question="what is gold? answer in french")
+    _lineaje_payload = "ANSWER:"
     try:
-        _lineaje_payload = gr_check(_lineaje_payload, "agent", "log", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_014', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_033', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_006', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:7fd745c7a348a937b9a4e479a81a79ea0ce80a249b391b0f0058120b5587590d')
+        import asyncio as _gr_asyncio
+        _lineaje_payload = await _gr_asyncio.to_thread(gr_check, _lineaje_payload, "agent", "log", candidate_policies=['AI_APP_SEC_001', 'AI_APP_SEC_002', 'AI_APP_SEC_006', 'AI_APP_SEC_014', 'AI_APP_SEC_022', 'AI_APP_SEC_023', 'AI_APP_SEC_028', 'AI_APP_SEC_029', 'AI_APP_SEC_032', 'AI_APP_SEC_033', 'AI_APP_SEC_034', 'AI_APP_SEC_035', 'AI_APP_SEC_038', 'AI_APP_SEC_039', 'AI_APP_SEC_040', 'AI_APP_SEC_059', 'AI_APP_SEC_064', 'AI_APP_SEC_066', 'AI_APP_SEC_067', 'AI_APP_SEC_068', 'AI_APP_SEC_069', 'AI_APP_SEC_071', 'AI_APP_SEC_075', 'AI_APP_SEC_078', 'AI_DAT_SEC_001', 'AI_DAT_SEC_009', 'AI_DAT_SEC_010', 'AI_DAT_SEC_011', 'AI_DAT_SEC_012', 'AI_DAT_SEC_023', 'AI_DAT_SEC_024', 'AI_DAT_SEC_025', 'AI_DAT_SEC_027', 'AI_DAT_SEC_029', 'AI_DAT_SEC_030', 'AI_IAC_002', 'AI_IAC_006', 'AI_IAC_007', 'AI_IAC_008', 'AI_IAC_009', 'AI_IAC_014', 'AI_IAC_015', 'AI_IAC_016', 'AI_IAC_017', 'AI_IAC_018', 'AI_IAC_020', 'AI_IAC_022', 'AI_IAC_023', 'AI_IAC_024', 'AI_IAC_025', 'AI_IAC_026', 'AI_IAC_031', 'AI_VULN_SEC_005'], site_id='site:sha256:1001339609f6b22e2d5f836e82b2997fc8f43dde87f0ee7a9b546034b27300da')
     except Exception as _gr_exc:
         if type(_gr_exc).__name__ == "GRBlockedError": raise
         _lineaje_payload = _lineaje_payload
         __import__("logging").getLogger("lineaje.gr_client").warning("Lineaje guardrail unavailable at 'agent->log' — passing data through unchecked")
-    print("\n\n", LLMEndpointConfig(), "\n\n")
-    assert config.llm_config == LLMEndpointConfig()
+    print("ANSWER:", answer.answer)
+
+
+asyncio.run(main())
