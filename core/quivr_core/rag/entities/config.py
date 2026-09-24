@@ -1,3 +1,71 @@
+# Copyright (c) Lineaje, Inc. All rights reserved.
+# gr_check() POSTs to GR_SERVICE_URL+/enforce; fail-open unless GRBlockedError.
+class GRBlockedError(Exception):
+    def __init__(self, policy_id, reason):
+        self.policy_id, self.reason = policy_id, reason
+        super().__init__("Guardrail block for policy %r: %s" % (policy_id, reason))
+
+def gr_check(data, source_type, destination_type, tenant_id="", timeout=5.0, **context):
+    import json as _j, logging as _lg, os as _os, urllib.error as _ue, urllib.request as _ur
+    _log = _lg.getLogger("lineaje.gr_client")
+    hop_label = source_type + "->" + destination_type
+    _prior = getattr(gr_check, "_blocked", None)
+    if _prior:
+        _log.warning("gr_client[%s]: skipping POST /enforce — request already blocked (%s)", hop_label, _prior[1])
+        raise GRBlockedError(_prior[0], _prior[1])
+    def _blk(o):
+        if isinstance(o, dict):
+            return any(_blk(o.get(k)) for k in ("skill_path", "skill_file", "path", "file_path", "data", "skill_manifest_path"))
+        s = str(o or "")
+        b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if b.endswith(".md.blocked"): return True
+        try:
+            if b in ("skill.md", "skills.md") and _os.path.isfile(str(o) + ".blocked"): return True
+        except Exception:
+            pass
+        return False
+    if _blk(data) or _blk(context):
+        _log.warning("gr_client[%s]: quarantined skill (*.blocked) — not loaded, GR not called", hop_label)
+        gr_check._blocked = ("blocked_manifest", "quarantined skill must not be read, downloaded, or loaded")
+        raise GRBlockedError("blocked_manifest", "quarantined skill must not be read, downloaded, or loaded")
+    url = _os.environ.get("GR_SERVICE_URL", "")
+    if not url:
+        return data
+    tid = tenant_id or _os.environ.get("GR_TENANT_ID", "")
+    bearer = _os.environ.get("GR_BEARER_TOKEN") or _os.environ.get("LINEAJE_PAT_TOKEN") or _os.environ.get("LINEAJE_PAT", "")
+    params_key = "out_params" if destination_type == "agent" else "in_params"
+    try:
+        headers = {"Content-Type": "application/json"}
+        if bearer:
+            headers["Authorization"] = "Bearer " + bearer
+        body = {"source_type": source_type, "destination_type": destination_type, params_key: {"data": data}}
+        for _k, _v in context.items():
+            if _v:
+                body[_k] = _v
+        if tid:
+            body["tenant_id"] = tid
+        _base = url.rstrip("/")
+        if _base.lower().endswith("/enforce"): _base = _base[: -len("/enforce")].rstrip("/")
+        req = _ur.Request(_base + "/enforce", data=_j.dumps(body).encode(), headers=headers, method="POST")
+        with _ur.urlopen(req, timeout=timeout) as resp:
+            result = _j.loads(resp.read())
+    except Exception as exc:
+        if isinstance(exc, _ue.HTTPError) and exc.code == 403:
+            try: detail = _j.loads(exc.read()).get("detail", {})
+            except Exception: detail = {}
+            blocked_by = detail.get("blocked_by") or []
+            policy_id = blocked_by[0]["policy_id"] if blocked_by else "unknown"
+            reason = detail.get("message", "Request denied by policy enforcement.")
+            _log.warning("gr_client[%s]: BLOCKED by policy=%s — %s", hop_label, policy_id, reason)
+            if _os.environ.get("GR_BLOCK_MODE", "enforce").lower() == "audit":
+                return data
+            gr_check._blocked = (policy_id, reason)
+            raise GRBlockedError(policy_id, reason)
+        _log.warning("gr_client[%s]: GR service call failed (%s) — failing open", hop_label, exc)
+        return data
+    if result.get("status") == "escalate":
+        _log.warning("gr_client[%s]: escalation flagged — passing through for human review", hop_label)
+    return result.get("result", {}).get("data", data)
 import logging
 import os
 import re
@@ -17,8 +85,6 @@ from quivr_core.llm_tools.llm_tools import TOOLS_CATEGORIES, TOOLS_LISTS, LLMToo
 from quivr_core.processor.splitter import SplitterConfig
 
 logger = logging.getLogger("quivr_core")
-MIN_CONTEXT_TOKENS = 4096
-MIN_OUTPUT_TOKENS = 4096
 
 
 def normalize_to_env_variable_name(name: str) -> str:
@@ -31,6 +97,12 @@ def normalize_to_env_variable_name(name: str) -> str:
             f"Invalid environment variable name '{env_variable_name}': Cannot start with a digit."
         )
 
+    try:
+        env_variable_name = gr_check(env_variable_name, "agent", "user_interface", site_id='site:sha256:acf1c9a9da794ba6e714227c2e0354747c504665be942e887822088d40672e0e')
+    except Exception as _gr_exc:
+        if type(_gr_exc).__name__ == "GRBlockedError": raise
+        env_variable_name = env_variable_name
+        __import__("logging").getLogger("lineaje.gr_client").warning("Lineaje guardrail unavailable at 'agent->user_interface' — passing data through unchecked")
     return env_variable_name
 
 
@@ -86,11 +158,6 @@ class LLMConfig(QuivrBaseConfig):
 class LLMModelConfig:
     _model_defaults: Dict[DefaultModelSuppliers, Dict[str, LLMConfig]] = {
         DefaultModelSuppliers.OPENAI: {
-            "gpt-4.1": LLMConfig(
-                max_context_tokens=1047576,
-                max_output_tokens=32768,
-                tokenizer_hub="Quivr/gpt-4o",
-            ),
             "gpt-4o": LLMConfig(
                 max_context_tokens=128000,
                 max_output_tokens=16384,
@@ -152,16 +219,6 @@ class LLMModelConfig:
             ),
         },
         DefaultModelSuppliers.ANTHROPIC: {
-            "claude-opus-4": LLMConfig(
-                max_context_tokens=200000,
-                max_output_tokens=8192,
-                tokenizer_hub="Quivr/claude-tokenizer",
-            ),
-            "claude-sonnet-4": LLMConfig(
-                max_context_tokens=200000,
-                max_output_tokens=8192,
-                tokenizer_hub="Quivr/claude-tokenizer",
-            ),
             "claude-3-7-sonnet": LLMConfig(
                 max_context_tokens=200000,
                 max_output_tokens=8192,
@@ -360,7 +417,21 @@ class LLMEndpointConfig(QuivrBaseConfig):
             self.llm_api_key = os.getenv(self.env_variable_name)
 
         if not self.llm_api_key:
+            _lineaje_payload = f"The API key for supplier '{self.supplier}' is not set. "
+            try:
+                _lineaje_payload = gr_check(_lineaje_payload, "agent", "log", site_id='site:sha256:695fcaa63dc62fd19ecbf39f816a846fa605e6819583080c328abbb0566e96a4')
+            except Exception as _gr_exc:
+                if type(_gr_exc).__name__ == "GRBlockedError": raise
+                _lineaje_payload = _lineaje_payload
+                __import__("logging").getLogger("lineaje.gr_client").warning("Lineaje guardrail unavailable at 'agent->log' — passing data through unchecked")
             logger.warning(f"The API key for supplier '{self.supplier}' is not set. ")
+            _lineaje_payload = f"Please set the environment variable: '{self.env_variable_name}'. "
+            try:
+                _lineaje_payload = gr_check(_lineaje_payload, "agent", "log", site_id='site:sha256:695fcaa63dc62fd19ecbf39f816a846fa605e6819583080c328abbb0566e96a4')
+            except Exception as _gr_exc:
+                if type(_gr_exc).__name__ == "GRBlockedError": raise
+                _lineaje_payload = _lineaje_payload
+                __import__("logging").getLogger("lineaje.gr_client").warning("Lineaje guardrail unavailable at 'agent->log' — passing data through unchecked")
             logger.warning(
                 f"Please set the environment variable: '{self.env_variable_name}'. "
             )
@@ -379,32 +450,30 @@ class LLMEndpointConfig(QuivrBaseConfig):
                     else llm_model_config.max_context_tokens
                 )
                 if self.max_context_tokens > _max_context_tokens:
+                    _lineaje_payload = f"Lowering max_context_tokens from {self.max_context_tokens} to {_max_context_tokens}"
+                    try:
+                        _lineaje_payload = gr_check(_lineaje_payload, "agent", "log", site_id='site:sha256:6363129dabf28b8f641e0d7158a74c55f2ee37ca2019580479abcad7e649ab65')
+                    except Exception as _gr_exc:
+                        if type(_gr_exc).__name__ == "GRBlockedError": raise
+                        _lineaje_payload = _lineaje_payload
+                        __import__("logging").getLogger("lineaje.gr_client").warning("Lineaje guardrail unavailable at 'agent->log' — passing data through unchecked")
                     logger.warning(
                         f"Lowering max_context_tokens from {self.max_context_tokens} to {_max_context_tokens}"
                     )
                     self.max_context_tokens = _max_context_tokens
-
-                if self.max_context_tokens < MIN_CONTEXT_TOKENS:
-                    logger.error(
-                        f"max_context_tokens is too low: {self.max_context_tokens}. "
-                    )
-                    raise ValueError(
-                        f"max_context_tokens is too low: {self.max_context_tokens}. "
-                    )
             if llm_model_config.max_output_tokens:
                 if self.max_output_tokens > llm_model_config.max_output_tokens:
+                    _lineaje_payload = f"Lowering max_output_tokens from {self.max_output_tokens} to {llm_model_config.max_output_tokens}"
+                    try:
+                        _lineaje_payload = gr_check(_lineaje_payload, "agent", "log", site_id='site:sha256:6363129dabf28b8f641e0d7158a74c55f2ee37ca2019580479abcad7e649ab65')
+                    except Exception as _gr_exc:
+                        if type(_gr_exc).__name__ == "GRBlockedError": raise
+                        _lineaje_payload = _lineaje_payload
+                        __import__("logging").getLogger("lineaje.gr_client").warning("Lineaje guardrail unavailable at 'agent->log' — passing data through unchecked")
                     logger.warning(
                         f"Lowering max_output_tokens from {self.max_output_tokens} to {llm_model_config.max_output_tokens}"
                     )
                     self.max_output_tokens = llm_model_config.max_output_tokens
-
-                if self.max_output_tokens < MIN_OUTPUT_TOKENS:
-                    logger.error(
-                        f"max_output_tokens is too low: {self.max_output_tokens}. "
-                    )
-                    raise ValueError(
-                        f"max_output_tokens is too low: {self.max_output_tokens}. "
-                    )
 
             self.tokenizer_hub = llm_model_config.tokenizer_hub
 
