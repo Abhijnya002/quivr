@@ -22,8 +22,10 @@ from __future__ import annotations
 
 __version__ = '2.0.0-alpha'
 
+import base64
 import contextvars
 import json
+import mimetypes
 import logging
 import os
 import re
@@ -582,6 +584,11 @@ def _ensure_ca_bundle_trusted() -> None:
     if _CA_BUNDLE_TRUSTED:
         return
     _CA_BUNDLE_TRUSTED = True
+    # Hybrid deployments only (GR on the customer's own VM behind a
+    # self-signed CA). SaaS / unset: the GR endpoint has a publicly trusted
+    # certificate, so never swap in a local CA bundle.
+    if (os.environ.get("UNIFAI_MODE") or "").strip().lower() not in ("hybrid", "onprem"):
+        return
     for path in _ca_bundle_candidates():
         if not os.path.isfile(path):
             continue
@@ -596,11 +603,10 @@ def _ensure_runtime_env_loaded() -> None:
     if _RUNTIME_ENV_LOADED:
         return
     _RUNTIME_ENV_LOADED = True
-    _ensure_ca_bundle_trusted()
     _keys = frozenset({
         "GR_SERVICE_URL", "LINEAJE_PAT_TOKEN", "LINEAJE_PAT", "GR_BEARER_TOKEN",
         "LINEAJE_REFRESH_TOKEN", "MCP_REFRESH_TOKEN", "LINEAJE_RENEW_ACCESS_TOKEN_URL",
-        "MCP_BEARER_TOKEN", "LINEAJE_BEARER_TOKEN", "BEARER_TOKEN",
+        "MCP_BEARER_TOKEN", "LINEAJE_BEARER_TOKEN", "BEARER_TOKEN", "UNIFAI_MODE",
     })
     _candidates = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
@@ -622,6 +628,8 @@ def _ensure_runtime_env_loaded() -> None:
         except OSError:
             pass
         break
+    # After .env is read, so a UNIFAI_MODE=hybrid set there is honoured.
+    _ensure_ca_bundle_trusted()
 
 
 def call_gr_enforce(
@@ -705,22 +713,11 @@ def call_gr_enforce(
     if tenant_id:
         body["tenant_id"] = tenant_id
 
-    req = urllib.request.Request(
-        f"{url}/enforce",
-        data=json.dumps(body, default=_json_default).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {pat}",
-        },
-        method="POST",
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read())
+        result = _post_enforce(url, body, pat, timeout)
         if result.get("status") == "escalate":
             _logger.warning("gr_stub_client[%s]: escalation flagged — passing through for human review", hop)
-        _announce_enforce(url, hop, result.get("status", "allow"), extra=f"actions={result.get('actions_applied') or []}")
+        _announce_enforce(url, hop, result.get("status", "allow"), extra=f"actions={_actions_brief(result.get('actions_applied') or [])}")
         if result.get("status") == "block":
             actions = result.get("actions_applied") or []
             pid = ""
@@ -731,7 +728,7 @@ def call_gr_enforce(
     except urllib.error.HTTPError as exc:
         if exc.code == 403:
             try:
-                detail = json.loads(exc.read()).get("detail", {})
+                detail = json.loads(_http_error_body(exc)).get("detail", {})
             except Exception:
                 detail = {}
             blocked_by = detail.get("blocked_by") or []
@@ -802,6 +799,11 @@ class SiteDescriptor:
     fail_mode: str = "ALLOW_WITH_AUDIT"
     source_type: str = ""
     destination_type: str = ""
+    # Scan-time project (the SBOM document_name the scan uploaded under) and
+    # organization — sent on every /enforce so project/org-scoped policy
+    # lookups (e.g. the approved-LLM list) filter on them.
+    project: str = ""
+    organization: str = ""
 
     def __post_init__(self) -> None:
         # Bind the per-request latch on the constructing thread (the FastAPI
@@ -1164,6 +1166,12 @@ def _decode_body(raw: Any) -> Any:
 
 _MAX_INLINE_FILE_BYTES = 512 * 1024
 _MAX_INLINE_FILES = 8
+# Binary documents (PDF, DOCX, DOC, …) are sent whole so the GR service can
+# extract their text — a truncated PDF/DOCX cannot be parsed at all, so the
+# 512 KB text cap above does not apply. Override with
+# LINEAJE_MAX_UPLOAD_SCAN_BYTES; larger files are sent without content and a
+# warning is logged (their contents are not scanned).
+_DEFAULT_MAX_BINARY_UPLOAD_BYTES = 10 * 1024 * 1024
 _MAX_JSONABLE_DEPTH = 8
 _PATH_TYPE_NAMES = frozenset({"Path", "PosixPath", "WindowsPath", "PurePath", "PurePosixPath", "PureWindowsPath"})
 
@@ -1311,6 +1319,135 @@ def _write_text_file(path: str, text: str) -> None:
         fh.write(text)
 
 
+def _max_binary_upload_bytes() -> int:
+    raw = (os.environ.get("LINEAJE_MAX_UPLOAD_SCAN_BYTES") or "").strip()
+    try:
+        return max(int(raw), 0) if raw else _DEFAULT_MAX_BINARY_UPLOAD_BYTES
+    except ValueError:
+        return _DEFAULT_MAX_BINARY_UPLOAD_BYTES
+
+
+_OOXML_MEDIA_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
+
+
+def _upload_media_type(name: str, head: bytes) -> str:
+    """Content type from the file's leading bytes, then its extension."""
+    ext = os.path.splitext(name or "")[1].lower()
+    if head.startswith(b"%PDF"):
+        return "application/pdf"
+    if head.startswith(b"PK\x03\x04") and ext in _OOXML_MEDIA_TYPES:
+        return _OOXML_MEDIA_TYPES[ext]
+    if head.startswith(b"PK\x03\x04"):
+        return _OOXML_MEDIA_TYPES[".docx"] if ext in ("", ".doc") else (
+            mimetypes.guess_type(name)[0] or "application/zip"
+        )
+    if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):   # OLE2 — legacy .doc / .xls / .ppt
+        return mimetypes.guess_type(name)[0] or "application/msword"
+    if head.startswith(b"{\\rtf"):
+        return "application/rtf"
+    return (ext in _OOXML_MEDIA_TYPES and _OOXML_MEDIA_TYPES[ext]) or \
+        mimetypes.guess_type(name or "")[0] or "application/octet-stream"
+
+
+# Always sent as bytes for server-side extraction, even when they happen to
+# contain no NUL bytes (an uncompressed PDF, a tiny DOCX): their raw bytes are
+# markup/containers, not the document's readable text.
+_BINARY_DOCUMENT_TYPES = frozenset({
+    "application/pdf", "application/msword", "application/vnd.ms-excel",
+    "application/vnd.ms-powerpoint", "application/zip", *_OOXML_MEDIA_TYPES.values(),
+})
+
+
+def _is_binary_document_result(masked: Any) -> bool:
+    """True when GR's returned entry is text *extracted* from a binary
+    document — that text can't be written back into the PDF/DOCX/DOC."""
+    return isinstance(masked, dict) and bool(
+        masked.get("extracted_from")
+        or masked.get("content_type") in _BINARY_DOCUMENT_TYPES
+        or masked.get("content_omitted")
+    )
+
+
+def _warn_binary_mask_not_applied(name: str, masked: Any) -> None:
+    _emit_enforce_log(logging.WARNING, (
+        f"[lineaje.enforce] upload {name!r} ({masked.get('content_type') or masked.get('extracted_from')}): "
+        "GR masked its extracted text, but a binary document can't be rewritten — the "
+        "original file is unchanged; PII is masked again at the next guarded hop (e.g. agent→llm)"
+    ))
+
+
+def _is_text_bytes(raw: bytes) -> bool:
+    return b"\x00" not in raw[:2048]
+
+
+def _read_upload_bytes(obj: Any, path: str, limit: int) -> "bytes | None":
+    """Up to ``limit`` + 1 bytes of an upload (disk path or in-memory stream),
+    restoring a stream's position so the app's real upload still reads it."""
+    if path:
+        try:
+            with open(path, "rb") as fh:
+                return fh.read(limit + 1)
+        except OSError:
+            return None
+    target = _stream_upload_target(obj)
+    try:
+        pos = target.tell()
+    except Exception:
+        pos = 0
+    try:
+        target.seek(0)
+        raw = target.read(limit + 1)
+    except Exception:
+        return None
+    finally:
+        try:
+            target.seek(pos)
+        except Exception:
+            pass
+    if isinstance(raw, str):
+        return raw.encode("utf-8")
+    return bytes(raw) if raw is not None else None
+
+
+def _upload_entry(obj: Any, *, name: str, path: str) -> dict[str, Any]:
+    """Wire form of one uploaded file: ``name``, ``path``, ``content_type``,
+    ``size_bytes`` and its content —
+
+      text files   → ``text`` (UTF-8), as before
+      binary docs  → ``content_base64`` (whole file); the GR service extracts
+                     the text (PDF / DOCX / DOC / …) into ``text`` before any
+                     policy routine runs, so PII / injection checks see the
+                     document's contents.
+    """
+    binary_limit = _max_binary_upload_bytes()
+    raw = _read_upload_bytes(obj, path, max(binary_limit, _MAX_INLINE_FILE_BYTES))
+    entry: dict[str, Any] = {"name": name, "path": path, "text": ""}
+    if raw is None:
+        entry["content_omitted"] = "unreadable"
+        return entry
+    size = os.path.getsize(path) if path and os.path.isfile(path) else len(raw)
+    entry["size_bytes"] = size
+    entry["content_type"] = _upload_media_type(name or path, raw[:16])
+    if _is_text_bytes(raw) and entry["content_type"] not in _BINARY_DOCUMENT_TYPES:
+        entry["text"] = raw[:_MAX_INLINE_FILE_BYTES].decode("utf-8", errors="replace")
+        if entry["content_type"] == "application/octet-stream":
+            entry["content_type"] = "text/plain"
+        return entry
+    if size > binary_limit:
+        entry["content_omitted"] = f"file larger than LINEAJE_MAX_UPLOAD_SCAN_BYTES={binary_limit}"
+        _emit_enforce_log(logging.WARNING, (
+            f"[lineaje.enforce] upload {name!r} ({size} bytes, {entry['content_type']}) exceeds "
+            f"LINEAJE_MAX_UPLOAD_SCAN_BYTES={binary_limit} — sent without content; NOT scanned"
+        ))
+        return entry
+    entry["content_base64"] = base64.b64encode(raw).decode("ascii")
+    return entry
+
+
 def _payload_is_uploaded_files(payload: Any) -> bool:
     items = payload if isinstance(payload, (list, tuple)) else [payload]
     return any(_looks_like_upload(item) for item in items[:_MAX_INLINE_FILES])
@@ -1353,9 +1490,8 @@ def _jsonable_payload(payload: Any, _depth: int = 0, _seen: "set[int] | None" = 
         _seen.add(oid)
         path = _file_like_path(payload)
         if path and not isinstance(payload.get("text"), str):
-            text = _read_text_file(path)
-            if text is not None:
-                payload = {**payload, "text": text}
+            entry = _upload_entry(payload, name=str(payload.get("name") or os.path.basename(path)), path=path)
+            payload = {**payload, **{k: v for k, v in entry.items() if k not in ("name", "path")}}
         return {str(k): _jsonable_payload(v, _depth + 1, _seen) for k, v in payload.items()}
     if isinstance(payload, (list, tuple)):
         _seen.add(oid)
@@ -1376,19 +1512,15 @@ def _jsonable_payload(payload: Any, _depth: int = 0, _seen: "set[int] | None" = 
         return out
     path = _file_like_path(payload)
     if path:
-        text = _read_text_file(path)
-        return {
-            "name": str(getattr(payload, "name", "") or os.path.basename(path)),
-            "path": path,
-            "text": text if text is not None else "",
-        }
+        return _upload_entry(
+            payload, name=str(getattr(payload, "name", "") or os.path.basename(path)), path=path,
+        )
     if _looks_like_stream_upload(payload):
-        text = _read_stream_upload_text(payload)
-        return {
-            "name": str(getattr(payload, "filename", "") or getattr(payload, "name", "") or ""),
-            "path": "",
-            "text": text if text is not None else "",
-        }
+        return _upload_entry(
+            payload,
+            name=str(getattr(payload, "filename", "") or getattr(payload, "name", "") or ""),
+            path="",
+        )
     dumped = _pydantic_dump(payload)
     if dumped is not None:
         _seen.add(oid)
@@ -1462,6 +1594,10 @@ def _rehydrate_item(original: Any, masked: Any) -> Any:
         return original
     path = _file_like_path(original)
     if path:
+        if _is_binary_document_result(masked):
+            if masked.get("text") != _read_text_file(path):
+                _warn_binary_mask_not_applied(os.path.basename(path), masked)
+            return original
         text = _masked_text_from(masked)
         if text is not None and _read_text_file(path) is not None:
             try:
@@ -1470,6 +1606,13 @@ def _rehydrate_item(original: Any, masked: Any) -> Any:
                 _logger.warning("gr_stub_client: could not write masked file %s (%s)", path, exc)
         return original
     if _looks_like_stream_upload(original):
+        if _is_binary_document_result(masked):
+            # Never overwrite a PDF/DOCX stream with extracted plain text — that
+            # would corrupt the file the app uploads right after this check.
+            _warn_binary_mask_not_applied(
+                str(getattr(original, "filename", "") or getattr(original, "name", "") or ""), masked,
+            )
+            return original
         text = _masked_text_from(masked)
         if text is not None:
             _write_stream_upload_text(original, text)
@@ -1618,11 +1761,25 @@ def _normalize_http_error_detail(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _http_error_body(exc: urllib.error.HTTPError) -> bytes:
+    """Raw HTTPError body, read once and cached on the exception — the
+    /enforce response log and the block handling both need it, and the
+    underlying stream can only be read once."""
+    raw = getattr(exc, "_lineaje_body", None)
+    if raw is None:
+        try:
+            raw = exc.read() or b""
+        except Exception:
+            raw = b""
+        try:
+            exc._lineaje_body = raw
+        except Exception:
+            pass
+    return raw
+
+
 def _read_http_error_detail(exc: urllib.error.HTTPError) -> dict[str, Any]:
-    try:
-        body = exc.read()
-    except Exception:
-        return {}
+    body = _http_error_body(exc)
     if not body:
         return {}
     try:
@@ -1690,6 +1847,20 @@ def _finalize_decision(decision: Decision, original: Any) -> Decision:
     return decision
 
 
+def _actions_brief(actions: Any) -> str:
+    """``[AI_APP_SEC_006:allow, AI_DAT_SEC_012:mask]`` — policy/decision only.
+    The full actions carry original_snippet (raw PII) and must never be
+    printed in the customer's process."""
+    parts = []
+    for a in actions or []:
+        if isinstance(a, dict):
+            if not a.get("policy_id") and a.get("type") in ("uploaded_file", "document_block"):
+                parts.append(f"decode:{a.get('name') or a.get('media_type') or '?'}:{a.get('action')}")
+                continue
+            parts.append(f"{a.get('policy_id') or '?'}:{a.get('decision') or a.get('action') or '?'}")
+    return "[" + ", ".join(parts) + "]"
+
+
 def _announce_enforce(url: str, hop: str, status: str, extra: str = "") -> None:
     """Always visible on stderr so a local customer run shows /enforce actually fired."""
     suffix = f" {extra}" if extra else ""
@@ -1717,8 +1888,222 @@ def _post_json(
         return json.loads(resp.read())
 
 
+# ── /enforce request / response logs in the customer app ─────────────────────
+#
+# LINEAJE_ENFORCE_LOG controls what the customer's own process logs for every
+# POST /enforce:
+#   summary (default) — one request line, one response line, one line per
+#                       policy action (policy, decision, type, model,
+#                       list_status, entity types). Never payload contents.
+#   full              — summary + the complete request and response JSON.
+#                       The request carries the raw, unmasked payload (PII,
+#                       prompts, file text) — for local debugging only.
+#   off               — no request/response logs.
+# The bearer token is never logged.
+#
+# Logged on the "lineaje.enforce" logger. When the customer app has not
+# configured logging for that level (no handlers, or level above INFO — the
+# Python default), the same line also goes to stderr, so the logs are always
+# visible in a local run / container stdout.
+
+_enforce_logger = logging.getLogger("lineaje.enforce")
+_ENFORCE_LOG_MAX_CHARS = 20000
+
+
+def _enforce_log_mode() -> str:
+    raw = (os.environ.get("LINEAJE_ENFORCE_LOG") or "summary").strip().lower()
+    return raw if raw in ("off", "summary", "full") else "summary"
+
+
+def _emit_enforce_log(level: int, msg: str) -> None:
+    # Exactly one of the two: the customer's logging when it will actually
+    # emit this line, else stderr. (Logging with no handlers configured would
+    # also hit Python's last-resort handler for WARNING — a duplicate line.)
+    try:
+        if _enforce_logger.hasHandlers() and _enforce_logger.isEnabledFor(level):
+            _enforce_logger.log(level, "%s", msg)
+        else:
+            print(msg, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+_ENFORCE_MODEL_KEYS = ("model", "model_id", "model_name", "engine", "deployment_id", "deployment_name")
+
+
+def _model_in_payload(data: Any) -> str:
+    """Model id the GR service will check for AI_APP_SEC_006/028 (same keys it reads)."""
+    if not isinstance(data, dict):
+        return ""
+    for candidate in (data, data.get("json"), data.get("data")):
+        if isinstance(candidate, dict):
+            for key in _ENFORCE_MODEL_KEYS:
+                val = candidate.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+    return ""
+
+
+def _policy_ids(policies: Any) -> list[str]:
+    ids: list[str] = []
+    for p in policies or []:
+        pid = p.get("policy_id") if isinstance(p, dict) else p
+        if pid:
+            ids.append(str(pid))
+    return ids
+
+
+def _enforce_request_payload(body: dict[str, Any]) -> Any:
+    if isinstance(body.get("payload"), dict):
+        return body["payload"].get("data")
+    for key in ("in_params", "out_params"):
+        if isinstance(body.get(key), dict):
+            params = body[key]
+            return params.get("data", params)
+    return None
+
+
+def _log_enforce_request(url: str, body: dict[str, Any], mode: str) -> None:
+    try:
+        data = _enforce_request_payload(body)
+        payload_bytes = len(json.dumps(data, default=_json_default)) if data is not None else 0
+        files = []
+        for f in (data.get("files") if isinstance(data, dict) and isinstance(data.get("files"), list)
+                  else [data] if isinstance(data, dict) and "content_type" in data else []):
+            if isinstance(f, dict):
+                how = ("base64" if f.get("content_base64") else "text" if f.get("text")
+                       else f.get("content_omitted") or "empty")
+                files.append(f"{f.get('name') or '?'}({f.get('content_type') or '?'}, "
+                             f"{f.get('size_bytes', '?')}B, {how})")
+        _emit_enforce_log(logging.INFO, (
+            f"[lineaje.enforce] → POST {url}/enforce site_id={body.get('site_id') or '-'} "
+            f"{body.get('source_type') or '-'}→{body.get('destination_type') or '-'} "
+            f"project={body.get('project') or '-'} organization={body.get('organization') or '-'} "
+            f"model={_model_in_payload(data) or '-'} "
+            f"candidate_policies={_policy_ids(body.get('candidate_policies') or body.get('enabled_policies'))} "
+            f"event_id={body.get('event_id') or '-'} payload_bytes={payload_bytes}"
+            + (f" files={files}" if files else "")
+        ))
+        if mode == "full":
+            _emit_enforce_log(logging.INFO, (
+                "[lineaje.enforce] → request body: "
+                + json.dumps(body, default=_json_default)[:_ENFORCE_LOG_MAX_CHARS]
+            ))
+    except Exception:
+        pass
+
+
+def _action_summary(entry: dict[str, Any]) -> str:
+    """One policy's outcome: approved-LLM list verdict, PII entity types, etc.
+    Snippets (original_snippet / masked_snippet) are never included."""
+    if entry.get("type") in ("uploaded_file", "document_block") and not entry.get("policy_id"):
+        return (f"document_decode {entry.get('action')} name={entry.get('name') or '-'} "
+                f"media_type={entry.get('media_type') or '-'} "
+                f"extracted_chars={entry.get('extracted_chars', '-')}"
+                + (f" note={entry.get('note')!r}" if entry.get("action") != "decoded" else ""))
+    inner = [a for a in (entry.get("actions") or []) if isinstance(a, dict)]
+    parts = [f"policy={entry.get('policy_id') or '-'}",
+             f"decision={entry.get('decision') or entry.get('action') or '-'}"]
+    types = sorted({str(a["type"]) for a in inner if a.get("type")})
+    if types:
+        parts.append(f"type={','.join(types)}")
+    for key in ("model", "list_status", "source"):
+        vals = sorted({str(a[key]) for a in inner if a.get(key)})
+        if vals:
+            parts.append(f"{key}={','.join(vals)}")
+    matched = sorted({
+        f"{m.get('name')}:{m.get('status')}"
+        for a in inner for m in (a.get("matched") or []) if isinstance(m, dict)
+    })
+    if matched:
+        parts.append(f"matched=[{', '.join(matched)}]")
+    entities = sorted({str(a.get("entity_type")) for a in inner if a.get("entity_type")})
+    if entities:
+        parts.append(f"entity_types={entities}")
+        fields = sorted({str(a.get("field")) for a in inner if a.get("field")})
+        parts.append(f"fields={fields}")
+    return " ".join(parts)
+
+
+def _log_enforce_response(
+    url: str, body: dict[str, Any], http_status: int, result: Any, elapsed_ms: int, mode: str,
+) -> None:
+    try:
+        site = body.get("site_id") or "-"
+        res = result if isinstance(result, dict) else {}
+        warning = res.get("warning")
+        _emit_enforce_log(logging.INFO, (
+            f"[lineaje.enforce] ← HTTP {http_status} site_id={site} status={res.get('status') or '-'} "
+            f"elapsed_ms={elapsed_ms} actions={len(res.get('actions_applied') or [])} "
+            f"recommendations={len(res.get('recommendations') or [])}"
+            + (f" warning={warning!r}" if warning else "")
+        ))
+        for entry in res.get("actions_applied") or []:
+            if isinstance(entry, dict):
+                _emit_enforce_log(logging.INFO, f"[lineaje.enforce]     {_action_summary(entry)}")
+        if mode == "full":
+            _emit_enforce_log(logging.INFO, (
+                "[lineaje.enforce] ← response body: "
+                + json.dumps(result, default=_json_default)[:_ENFORCE_LOG_MAX_CHARS]
+            ))
+    except Exception:
+        pass
+
+
+def _log_enforce_http_error(
+    url: str, body: dict[str, Any], exc: urllib.error.HTTPError, elapsed_ms: int, mode: str,
+) -> None:
+    try:
+        raw = _http_error_body(exc)
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except Exception:
+            parsed = {}
+        detail = _normalize_http_error_detail(parsed)
+        site = body.get("site_id") or "-"
+        level = logging.WARNING
+        if exc.code == 403 and detail.get("error") == "request_blocked":
+            blocked_by = _policy_ids(detail.get("blocked_by"))
+            msg = (f"[lineaje.enforce] ← HTTP 403 site_id={site} BLOCKED by {blocked_by} "
+                   f"elapsed_ms={elapsed_ms} — {detail.get('message') or ''}")
+        else:
+            msg = (f"[lineaje.enforce] ← HTTP {exc.code} site_id={site} "
+                   f"error={detail.get('error') or exc.reason!r} elapsed_ms={elapsed_ms}"
+                   + (f" — {detail.get('message')}" if detail.get("message") else ""))
+        _emit_enforce_log(level, msg)
+        if mode == "full":
+            _emit_enforce_log(level, (
+                "[lineaje.enforce] ← response body: "
+                + raw.decode("utf-8", "replace")[:_ENFORCE_LOG_MAX_CHARS]
+            ))
+    except Exception:
+        pass
+
+
 def _post_enforce(url: str, body: dict[str, Any], pat: str, timeout: float) -> dict[str, Any]:
-    return _post_json(url, "/enforce", body, pat, timeout)
+    """POST /enforce, logging the request and the response in the customer app
+    (see LINEAJE_ENFORCE_LOG above). Errors are re-raised unchanged for the
+    caller's block / fail-open handling."""
+    mode = _enforce_log_mode()
+    started = time.monotonic()
+    if mode != "off":
+        _log_enforce_request(url, body, mode)
+    try:
+        result = _post_json(url, "/enforce", body, pat, timeout)
+    except urllib.error.HTTPError as exc:
+        if mode != "off":
+            _log_enforce_http_error(url, body, exc, int((time.monotonic() - started) * 1000), mode)
+        raise
+    except Exception as exc:
+        if mode != "off":
+            _emit_enforce_log(logging.WARNING, (
+                f"[lineaje.enforce] ✗ POST {url}/enforce site_id={body.get('site_id') or '-'} "
+                f"failed after {int((time.monotonic() - started) * 1000)}ms — {type(exc).__name__}: {exc}"
+            ))
+        raise
+    if mode != "off":
+        _log_enforce_response(url, body, 200, result, int((time.monotonic() - started) * 1000), mode)
+    return result
 
 
 def _ensure_site_registered(
@@ -1759,6 +2144,12 @@ def _ensure_site_registered(
                 "phase": getattr(site, "phase", "") or "",
                 "boundary": getattr(site, "boundary", None) or {},
                 "components": getattr(site, "components", None) or {},
+                # Record the stub's own list as the site's mapping so the
+                # /enforce exact-match holds.
+                "candidate_policies": [
+                    (c.get("policy_id") if isinstance(c, dict) else getattr(c, "policy_id", c))
+                    for c in (getattr(site, "candidate_policies", None) or [])
+                ],
             },
             pat,
             timeout,
@@ -1907,6 +2298,8 @@ def check(
         "candidate_policies": site.candidate_policies,
         "boundary": site.boundary,
         "components": site.components,
+        "project": getattr(site, "project", "") or "",
+        "organization": getattr(site, "organization", "") or "",
         "source_type": wire_src,
         "destination_type": wire_dst,
         "payload": {"mode": "inline", "content_type": content_type, "data": wire_data},
@@ -1942,7 +2335,7 @@ def check(
         decision = _decision_from(result)
         _announce_enforce(
             url, hop, decision.status,
-            extra=f"actions={decision.actions_applied or []}",
+            extra=f"actions={_actions_brief(decision.actions_applied or [])}",
         )
         return decision
     except urllib.error.HTTPError as exc:
@@ -1962,7 +2355,7 @@ def check(
                         decision = _decision_from(result)
                         _announce_enforce(
                             url, hop, decision.status,
-                            extra=f"actions={decision.actions_applied or []}",
+                            extra=f"actions={_actions_brief(decision.actions_applied or [])}",
                         )
                         return decision
                     except Exception as retry_exc:
@@ -1994,7 +2387,7 @@ def check(
                     decision = _decision_from(result)
                     _announce_enforce(
                         url, hop, decision.status,
-                        extra=f"(no site_id) actions={decision.actions_applied or []}",
+                        extra=f"(no site_id) actions={_actions_brief(decision.actions_applied or [])}",
                     )
                     return decision
                 except Exception as retry_exc:
